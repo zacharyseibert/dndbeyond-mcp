@@ -18,6 +18,7 @@ interface GameConfig {
   damageTypes: Array<{ id: number; name: string }>;
   senses: Array<{ id: number; name: string }>;
   sources?: Array<{ id: number; name: string }>;
+  creatureSizes?: Array<{ id: number; name: string }>;
 }
 
 const SIZE_MAP: Record<number, string> = {
@@ -127,12 +128,36 @@ const SPELLCASTING_CLASS_IDS = [1, 2, 3, 4, 5, 6, 7, 8]; // Bard through Wizard
  * Queries both classLevel=1 (for cantrips/level 0 spells) and classLevel=20 (for levels 1-9).
  * Deduplicates by spell definition name.
  */
+function formatCr(value: number): string {
+  if (value === 0.125) return "1/8";
+  if (value === 0.25) return "1/4";
+  if (value === 0.5) return "1/2";
+  return `${value}`;
+}
+
 async function loadSpellCompendium(client: DdbClient): Promise<DdbSpell[]> {
   const allSpells = new Map<string, DdbSpell>();
   let failureCount = 0;
   const totalRequests = SPELLCASTING_CLASS_IDS.length * 4; // 2 for known, 2 for prepared
 
   for (const classId of SPELLCASTING_CLASS_IDS) {
+    // Full class spell list, including cantrips (the always-known/prepared
+    // endpoints below omit most cantrips). Best effort: older data still loads.
+    try {
+      const classList = await client.get<DdbSpell[]>(
+        ENDPOINTS.gameData.classSpells(classId, 20),
+        `spell-compendium:class:${classId}:full`,
+        86_400_000, // 24h
+      );
+      for (const spell of classList ?? []) {
+        if (spell.definition?.name && !allSpells.has(spell.definition.name)) {
+          allSpells.set(spell.definition.name, spell);
+        }
+      }
+    } catch {
+      // ignore; fall through to the other endpoints
+    }
+
     // Fetch cantrips (level 0) by querying at classLevel=1
     try {
       const cantrips = await client.get<DdbSpell[]>(
@@ -519,7 +544,7 @@ export async function searchMonsters(
   if (params.size) {
     const searchSize = params.size.toLowerCase();
     monsters = monsters.filter((m) => {
-      const sizeName = SIZE_MAP[m.sizeId]?.toLowerCase() ?? "";
+      const sizeName = (SIZE_MAP[m.sizeId] ?? config.creatureSizes?.find((z) => z.id === m.sizeId)?.name)?.toLowerCase() ?? "";
       return sizeName.includes(searchSize);
     });
   }
@@ -545,9 +570,9 @@ export async function searchMonsters(
 
   for (const m of monsters) {
     const cr = crMap.get(m.challengeRatingId);
-    const crStr = cr ? (cr.value < 1 ? `${cr.value}` : `${cr.value}`) : "?";
+    const crStr = cr ? formatCr(cr.value) : "?";
     const typeName = typeMap.get(m.typeId) ?? "Unknown";
-    const sizeName = SIZE_MAP[m.sizeId] ?? "Unknown";
+    const sizeName = SIZE_MAP[m.sizeId] ?? config.creatureSizes?.find((z) => z.id === m.sizeId)?.name ?? "Unknown";
     const homebrewTag = m.isHomebrew ? " [Homebrew]" : "";
 
     lines.push(
@@ -606,10 +631,10 @@ export async function getMonster(
   const senseMap = new Map(config.senses.map((s) => [s.id, s.name]));
 
   const cr = crMap.get(m.challengeRatingId);
-  const crStr = cr ? `${cr.value}` : "?";
+  const crStr = cr ? formatCr(cr.value) : "?";
   const xp = cr?.xp ?? 0;
   const typeName = typeMap.get(m.typeId) ?? "Unknown";
-  const sizeName = SIZE_MAP[m.sizeId] ?? "Unknown";
+  const sizeName = SIZE_MAP[m.sizeId] ?? config.creatureSizes?.find((z) => z.id === m.sizeId)?.name ?? "Unknown";
   const alignment = alignMap.get(m.alignmentId) ?? "Unaligned";
 
   const lines: string[] = [];
@@ -643,7 +668,12 @@ export async function getMonster(
   // Saving throws
   if (m.savingThrows && m.savingThrows.length > 0) {
     const saves = m.savingThrows
-      .map((s) => `${STAT_NAMES[s.statId]} +${s.bonusModifier}`)
+      .map((s) => {
+        // bonusModifier is null when the save is just ability mod + proficiency
+        const score = m.stats?.find((st) => st.statId === s.statId)?.value ?? 10;
+        const bonus = s.bonusModifier ?? Math.floor((score - 10) / 2) + (cr?.proficiencyBonus ?? 2);
+        return `${STAT_NAMES[s.statId]} ${bonus >= 0 ? "+" : ""}${bonus}`;
+      })
       .join(", ");
     lines.push(`**Saving Throws** ${saves}`);
   }
@@ -792,7 +822,7 @@ export async function searchItems(
 
   const lines = [`# Item Search Results (${total > 30 ? `showing 30 of ${total}` : `${total} found`})\n`];
   for (const item of matched) {
-    const attune = item.requiresAttunement ? " (attunement)" : "";
+    const attune = item.requiresAttunement || item.canAttune ? " (attunement)" : "";
     lines.push(`- **${item.name}** — ${item.rarity || "Common"} ${item.filterType || item.type || ""}${attune}`);
   }
 
@@ -831,7 +861,7 @@ export async function getItem(
   lines.push(`# ${item.name}`);
   lines.push(`*${item.filterType || item.type || "Item"}, ${item.rarity || "common"}*\n`);
 
-  if (item.requiresAttunement) {
+  if (item.requiresAttunement || item.canAttune) {
     lines.push(`**Requires Attunement**${item.attunementDescription ? " " + item.attunementDescription : ""}`);
   }
 

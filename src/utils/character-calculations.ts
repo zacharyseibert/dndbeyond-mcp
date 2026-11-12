@@ -7,6 +7,7 @@ import type {
   DdbCharacter,
   DdbAbilityScore,
   DdbModifier,
+  DdbSpell,
 } from "../types/character.js";
 
 export const ABILITY_NAMES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
@@ -87,33 +88,32 @@ export function calculateAc(char: DdbCharacter): number {
   for (const item of char.inventory) {
     if (!item.equipped) continue;
 
-    const itemType = item.definition.type?.toLowerCase() || "";
-    const filterType = item.definition.filterType?.toLowerCase() || "";
+    const def = item.definition;
+    const itemType = def.type?.toLowerCase() || "";
+    const filterType = def.filterType?.toLowerCase() || "";
+    // D&D Beyond armorTypeId: 1 = light, 2 = medium, 3 = heavy, 4 = shield.
+    // Some armor (e.g. Studded Leather) has an empty `type`, so prefer armorTypeId.
+    const armorTypeId = def.armorTypeId ?? null;
 
-    // Check for shield
-    if (itemType.includes("shield")) {
-      shieldBonus = item.definition.armorClass ?? 2;
+    const isShield = armorTypeId === 4 || itemType.includes("shield");
+    if (isShield) {
+      shieldBonus = def.armorClass ?? 2;
       continue;
     }
 
-    // Check for armor
-    if (itemType.includes("armor")) {
-      const acValue = item.definition.armorClass ?? 10;
+    const isArmor =
+      (armorTypeId !== null && armorTypeId >= 1 && armorTypeId <= 3) ||
+      itemType.includes("armor") ||
+      filterType === "armor";
+    if (!isArmor) continue;
 
-      if (filterType.includes("heavy") || itemType.includes("heavy")) {
-        baseAc = acValue;
-        armorType = "heavy";
-      } else if (filterType.includes("medium") || itemType.includes("medium")) {
-        baseAc = acValue;
-        armorType = "medium";
-      } else if (filterType.includes("light") || itemType.includes("light")) {
-        baseAc = acValue;
-        armorType = "light";
-      } else {
-        // Default to light armor if type unclear
-        baseAc = acValue;
-        armorType = "light";
-      }
+    baseAc = def.armorClass ?? 10;
+    if (armorTypeId === 3 || itemType.includes("heavy")) {
+      armorType = "heavy";
+    } else if (armorTypeId === 2 || itemType.includes("medium")) {
+      armorType = "medium";
+    } else {
+      armorType = "light";
     }
   }
 
@@ -144,10 +144,74 @@ export function calculateAc(char: DdbCharacter): number {
 
   // Add AC modifiers from features/spells
   const acBonus = sumModifierBonuses(char.modifiers, "armor-class")
-    + sumModifierBonuses(char.modifiers, "armored-armor-class")
-    + sumModifierBonuses(char.modifiers, "unarmored-armor-class");
+    + (armorType !== "none" ? sumModifierBonuses(char.modifiers, "armored-armor-class") : 0)
+    + (armorType === "none" ? sumModifierBonuses(char.modifiers, "unarmored-armor-class") : 0);
 
   finalAc += acBonus;
 
   return finalAc;
+}
+
+/**
+ * Collect every spell on the character.
+ *
+ * D&D Beyond keeps a class's prepared/known spell list in `classSpells`, not in
+ * `spells.class` (which only holds spells granted by class features). Spells from
+ * race, background, items and feats are innate: they're usable without being
+ * prepared, but D&D Beyond doesn't flag them as prepared. Cantrips are always
+ * available too. Those get normalized to alwaysPrepared so prepared filters work.
+ */
+export function getAllSpells(char: DdbCharacter): DdbSpell[] {
+  const innate = (spells: DdbSpell[] | null | undefined): DdbSpell[] =>
+    (spells ?? []).map((sp) => ({ ...sp, alwaysPrepared: true }));
+  const withCantrips = (spells: DdbSpell[] | null | undefined): DdbSpell[] =>
+    (spells ?? []).map((sp) =>
+      sp.definition?.level === 0 ? { ...sp, alwaysPrepared: true } : sp
+    );
+
+  const all: DdbSpell[] = [
+    ...withCantrips(char.spells?.class),
+    ...(char.classSpells ?? []).flatMap((cs) => withCantrips(cs.spells)),
+    ...innate(char.spells?.race),
+    ...innate(char.spells?.background),
+    ...innate(char.spells?.item),
+    ...innate(char.spells?.feat),
+  ];
+
+  // De-duplicate by spell name, keeping the most "available" copy.
+  const byName = new Map<string, DdbSpell>();
+  for (const sp of all) {
+    const name = sp.definition?.name;
+    if (!name) continue;
+    const existing = byName.get(name);
+    const rank = (x: DdbSpell) => (x.alwaysPrepared ? 2 : x.prepared ? 1 : 0);
+    if (!existing || rank(sp) > rank(existing)) byName.set(name, sp);
+  }
+  // D&D Beyond can return both the 2014 and 2024 name of a spell (e.g.
+  // "Melf's Acid Arrow" and "Acid Arrow"). Keep one, matching the edition the
+  // character's own spells use (isLegacy), else the longer 2014-style name.
+  const spells = [...byName.values()];
+  const legacyVotes = spells.reduce((n, sp) => {
+    const flag = (sp.definition as { isLegacy?: boolean }).isLegacy;
+    return flag === true ? n + 1 : flag === false ? n - 1 : n;
+  }, 0);
+  const preferLegacy = legacyVotes >= 0;
+  const drop = new Set<DdbSpell>();
+  for (const a of spells) {
+    for (const b of spells) {
+      if (a === b || a.definition.level !== b.definition.level) continue;
+      if (!a.definition.name.endsWith(" " + b.definition.name)) continue;
+      // a = longer (2014-style) name, b = shorter (2024-style) name
+      const aLegacy = (a.definition as { isLegacy?: boolean }).isLegacy;
+      const bLegacy = (b.definition as { isLegacy?: boolean }).isLegacy;
+      if (aLegacy === undefined && bLegacy === undefined) {
+        drop.add(b);
+      } else if (preferLegacy) {
+        drop.add(bLegacy ? a : b);
+      } else {
+        drop.add(aLegacy ? a : b);
+      }
+    }
+  }
+  return spells.filter((sp) => !drop.has(sp));
 }

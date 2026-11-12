@@ -18,6 +18,7 @@ export interface DdbCharacter {
   lifestyleId: number;
   currencies: DdbCurrencies;
   spells: DdbSpellsContainer;
+  classSpells?: Array<{ characterClassId: number; spells: DdbSpell[] | null }>;
   inventory: DdbInventoryItem[];
   deathSaves: DdbDeathSaves;
   traits: DdbTraits;
@@ -47,12 +48,13 @@ export interface DdbRace {
   baseRaceName: string;
   isHomebrew: boolean;
   racialTraits: DdbRacialTrait[];
+  weightSpeeds?: { normal?: { walk?: number | null } | null } | null;
 }
 
 export interface DdbClass {
   id: number;
   definition: { id: number; name: string };
-  subclassDefinition: { name: string; classFeatures: DdbClassFeature[] } | null;
+  subclassDefinition: { id?: number; name: string; classFeatures: DdbClassFeature[] } | null;
   level: number;
   isStartingClass: boolean;
   classFeatures: DdbClassFeature[];
@@ -135,6 +137,7 @@ export interface DdbInventoryItem {
     cost: number | null;
     isHomebrew: boolean;
     armorClass?: number | null;
+    armorTypeId?: number | null;
     filterType?: string;
   };
   equipped: boolean;

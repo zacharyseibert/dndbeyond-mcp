@@ -4,7 +4,7 @@ import { ENDPOINTS } from "../api/endpoints.js";
 import type { DdbCharacter } from "../types/character.js";
 import type { DdbCampaign, DdbCampaignCharacter2 } from "../types/api.js";
 import { HttpError } from "../resilience/index.js";
-import { ABILITY_NAMES, calculateAbilityModifier, computeFinalAbilityScore, computeLevel, calculateMaxHp, calculateCurrentHp, calculateAc } from "../utils/character-calculations.js";
+import { ABILITY_NAMES, calculateAbilityModifier, computeFinalAbilityScore, computeLevel, calculateMaxHp, calculateCurrentHp, calculateAc, getAllSpells } from "../utils/character-calculations.js";
 
 function formatAbilityScores(char: DdbCharacter): string {
   return ABILITY_NAMES.map((name, idx) => {
@@ -51,13 +51,7 @@ function formatCharacter(char: DdbCharacter): string {
 }
 
 function formatSpellList(char: DdbCharacter): string {
-  const allSpells = [
-    ...(char.spells.class ?? []),
-    ...(char.spells.race ?? []),
-    ...(char.spells.background ?? []),
-    ...(char.spells.item ?? []),
-    ...(char.spells.feat ?? []),
-  ];
+  const allSpells = getAllSpells(char);
 
   if (allSpells.length === 0) return "No spells available.";
 

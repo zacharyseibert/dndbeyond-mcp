@@ -134,7 +134,7 @@ describe("searchSpells", () => {
     await searchSpells(mockClient, {});
 
     // Should call get for each of 8 classes, 4 times each (known cantrips, known spells, prepared cantrips, prepared spells)
-    expect(mockGet).toHaveBeenCalledTimes(32);
+    expect(mockGet).toHaveBeenCalledTimes(40);
   });
 });
 

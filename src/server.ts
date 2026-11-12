@@ -12,6 +12,7 @@ import {
   getCharacter,
   getDefinition,
   listCharacters,
+  getPartySnapshot,
   updateHp,
   updateSpellSlots,
   updateDeathSaves,
@@ -44,6 +45,7 @@ import {
   updateDescription,
 } from "./tools/character.js";
 import { listCampaigns, getCampaignCharacters } from "./tools/campaign.js";
+import { getGameLog, getSessionRecap, getRollStats } from "./tools/game-log.js";
 import {
   searchSpells,
   getSpell,
@@ -671,6 +673,48 @@ export async function startServer(): Promise<void> {
       getCampaignCharacters(client, {
         campaignId: params.campaignId,
       })
+  );
+
+  server.tool(
+    "get_party_snapshot",
+    "Quick party overview for a campaign: AC, HP, passive Perception, spell save DC, and speed for every readable character",
+    {
+      campaignId: z.coerce.number().optional().describe("Campaign ID (defaults to your only active campaign)"),
+    },
+    async (params) => getPartySnapshot(client, params)
+  );
+
+  server.tool(
+    "get_game_log",
+    "Get the campaign game log (dice rolls and other events from play sessions), newest first",
+    {
+      campaignId: z.coerce.number().optional().describe("Campaign ID (defaults to your only active campaign)"),
+      limit: z.coerce.number().optional().describe("Max entries to return (default 50, max 500)"),
+      characterName: z.string().optional().describe("Only show entries for this character (partial match)"),
+      raw: z.boolean().optional().describe("Return the raw API response (debugging)"),
+    },
+    async (params) => getGameLog(client, params)
+  );
+
+  server.tool(
+    "get_session_recap",
+    "Summarize recent play sessions from the campaign game log: rolls per character, nat 20s and 1s, biggest hits, and a timeline. Sessions are split on gaps of several hours.",
+    {
+      campaignId: z.coerce.number().optional().describe("Campaign ID (defaults to your only active campaign)"),
+      sessions: z.coerce.number().optional().describe("How many recent sessions to recap (default 1, max 10)"),
+      gapHours: z.coerce.number().optional().describe("Hours of silence that start a new session (default 4)"),
+    },
+    async (params) => getSessionRecap(client, params)
+  );
+
+  server.tool(
+    "get_roll_stats",
+    "Luck report from the campaign game log: average d20, nat 20 and nat 1 rates, advantage use, and damage per character",
+    {
+      campaignId: z.coerce.number().optional().describe("Campaign ID (defaults to your only active campaign)"),
+      characterName: z.string().optional().describe("Only this character (partial match)"),
+    },
+    async (params) => getRollStats(client, params)
   );
 
   // Register reference tools - spells

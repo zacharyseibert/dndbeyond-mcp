@@ -1,6 +1,7 @@
 export const DDB_CHARACTER_SERVICE = "https://character-service.dndbeyond.com";
 export const DDB_MONSTER_SERVICE = "https://monster-service.dndbeyond.com";
 export const DDB_WATERDEEP = "https://www.dndbeyond.com";
+export const DDB_GAME_LOG = "https://game-log-rest-live.dndbeyond.com";
 
 export const ENDPOINTS = {
   character: {
@@ -60,10 +61,17 @@ export const ENDPOINTS = {
     backgrounds: () => `${DDB_CHARACTER_SERVICE}/character/v5/game-data/backgrounds`,
     alwaysKnownSpells: (classId: number, classLevel: number = 20) =>
       `${DDB_CHARACTER_SERVICE}/character/v5/game-data/always-known-spells?classId=${classId}&classLevel=${classLevel}&sharingSetting=2`,
+    classSpells: (classId: number, classLevel: number = 20) =>
+      `${DDB_CHARACTER_SERVICE}/character/v5/game-data/spells?classId=${classId}&classLevel=${classLevel}&sharingSetting=2`,
     alwaysPreparedSpells: (classId: number, classLevel: number = 20) =>
       `${DDB_CHARACTER_SERVICE}/character/v5/game-data/always-prepared-spells?classId=${classId}&classLevel=${classLevel}&sharingSetting=2`,
     classFeatureCollection: () => `${DDB_CHARACTER_SERVICE}/character/v5/game-data/class-feature/collection`,
     racialTraitCollection: () => `${DDB_CHARACTER_SERVICE}/character/v5/game-data/racial-trait/collection`,
+  },
+  gameLog: {
+    messages: (gameId: number, userId: number, lastKey?: string) =>
+      `${DDB_GAME_LOG}/v1/getmessages?gameId=${gameId}&userId=${userId}` +
+      (lastKey ? `&lastKey=${encodeURIComponent(lastKey)}` : ""),
   },
   monster: {
     search: (search: string = "", skip: number = 0, take: number = 20, showHomebrew?: boolean, sources?: string) => {

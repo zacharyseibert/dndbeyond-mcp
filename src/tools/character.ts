@@ -1,5 +1,6 @@
 import type { DdbClient } from "../api/client.js";
 import { ENDPOINTS } from "../api/endpoints.js";
+import { getUserId } from "../api/auth.js";
 import { HttpError } from "../resilience/index.js";
 import type {
   DdbCharacter,
@@ -13,7 +14,7 @@ import type {
 } from "../types/character.js";
 import type { DdbCampaign, DdbCampaignCharacter2 } from "../types/api.js";
 import { fuzzyMatch, levenshteinDistance } from "../utils/fuzzy-match.js";
-import { ABILITY_NAMES, ABILITY_SUBTYPE_MAP, calculateAbilityModifier, sumModifierBonuses, computeFinalAbilityScore, computeLevel, calculateMaxHp, calculateCurrentHp, calculateAc } from "../utils/character-calculations.js";
+import { ABILITY_NAMES, ABILITY_SUBTYPE_MAP, calculateAbilityModifier, sumModifierBonuses, computeFinalAbilityScore, computeLevel, calculateMaxHp, calculateCurrentHp, calculateAc, getAllSpells } from "../utils/character-calculations.js";
 
 interface GetCharacterParams {
   characterId?: number;
@@ -94,15 +95,6 @@ function formatInventory(char: DdbCharacter): string {
 // UTILITY FUNCTIONS
 // ============================================================================
 
-function getAllSpells(char: DdbCharacter): DdbSpell[] {
-  return [
-    ...(char.spells.class ?? []),
-    ...(char.spells.race ?? []),
-    ...(char.spells.background ?? []),
-    ...(char.spells.item ?? []),
-    ...(char.spells.feat ?? []),
-  ];
-}
 
 function stripHtml(s: string | null | undefined): string {
   if (!s) return StringUtils.EMPTY;
@@ -222,7 +214,9 @@ function formatSavingThrows(char: DdbCharacter): string {
   for (let id = 1; id <= 6; id++) {
     const mod = getAbilityModNumeric(char, id);
     const proficient = hasModifierBySubType(char.modifiers, SAVING_THROW_SUBTYPES[id], "proficiency");
-    const total = mod + (proficient ? profBonus : 0);
+    const bonus = sumModifierBonuses(char.modifiers, "saving-throws")
+      + sumModifierBonuses(char.modifiers, SAVING_THROW_SUBTYPES[id]);
+    const total = mod + (proficient ? profBonus : 0) + bonus;
     const sign = total >= 0 ? "+" : "";
     const prof = proficient ? " *" : "";
     saves.push(`${ABILITY_NAMES[id - 1]}: ${sign}${total}${prof}`);
@@ -368,11 +362,18 @@ function formatLimitedUseResources(char: DdbCharacter): string {
     if (!Array.isArray(list)) continue;
     for (const action of list) {
       if (action.limitedUse) {
-        const used = action.limitedUse.numberUsed;
-        const max = action.limitedUse.maxUses;
+        const lu = action.limitedUse as typeof action.limitedUse & {
+          statModifierUsesId?: number | null;
+          useProficiencyBonus?: boolean;
+        };
+        const used = lu.numberUsed ?? 0;
+        let max = lu.maxUses ?? 0;
+        if (lu.statModifierUsesId) max += Math.max(1, getAbilityModNumeric(char, lu.statModifierUsesId));
+        if (lu.useProficiencyBonus) max += calculateProficiencyBonus(computeLevel(char));
+        if (max <= 0) continue; // not actually limited (e.g. a passive feature)
         const remaining = max - used;
-        const reset = action.limitedUse.resetTypeDescription || "unknown";
-        resources.push(`  ${action.name}: ${remaining}/${max} (${reset})`);
+        const reset = lu.resetTypeDescription ? ` (${lu.resetTypeDescription})` : "";
+        resources.push(`  ${action.name}: ${remaining}/${max}${reset}`);
       }
     }
   }
@@ -432,8 +433,8 @@ function formatRacialTraitNames(char: DdbCharacter): string {
 }
 
 function formatSpeed(char: DdbCharacter): string {
-  // Base walking speed for most races is 30 ft
-  let baseSpeed = 30;
+  // Use the race's base walking speed (e.g. 25 ft for gnomes); fall back to 30 ft
+  const baseSpeed = char.race?.weightSpeeds?.normal?.walk || 30;
 
   // Check modifiers for speed bonuses
   let speedBonus = sumModifierBonuses(char.modifiers, "speed");
@@ -533,6 +534,138 @@ function formatNotes(char: DdbCharacter): string {
   return `\n--- Notes ---\n${lines.join("\n")}`;
 }
 
+// ----------------------------------------------------------------------------
+// Attacks, full inventory, passive perception
+// ----------------------------------------------------------------------------
+
+type WeaponDef = {
+  name: string;
+  filterType?: string;
+  attackType?: number | null; // 1 = melee, 2 = ranged
+  range?: number | null;
+  longRange?: number | null;
+  damage?: { diceString?: string } | null;
+  damageType?: string | null;
+  properties?: Array<{ name: string }> | null;
+  categoryId?: number | null; // 1 = simple, 2 = martial
+  type?: string;
+  grantedModifiers?: Array<{ type: string; subType: string; value: number | null }> | null;
+  weight?: number;
+};
+
+const kebab = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+function isWeaponProficient(char: DdbCharacter, def: WeaponDef): boolean {
+  const has = (sub: string) => hasModifierBySubType(char.modifiers, sub, "proficiency");
+  if (def.categoryId === 1 && has("simple-weapons")) return true;
+  if (def.categoryId === 2 && has("martial-weapons")) return true;
+  // Specific weapon proficiency, e.g. "crossbow-light" or "light-crossbow"
+  const name = kebab(def.type || def.name);
+  if (has(name) || has(kebab(def.name))) return true;
+  const parts = def.name.split(",").map((x) => x.trim());
+  if (parts.length === 2 && has(kebab(`${parts[1]} ${parts[0]}`))) return true;
+  return false;
+}
+
+function formatAttacks(char: DdbCharacter): string {
+  const pb = calculateProficiencyBonus(computeLevel(char));
+  const str = getAbilityModNumeric(char, 1);
+  const dex = getAbilityModNumeric(char, 2);
+  const lines: string[] = [];
+  const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+
+  for (const item of char.inventory ?? []) {
+    if (!item.equipped) continue;
+    const def = item.definition as unknown as WeaponDef;
+    const isWeapon = def.filterType === "Weapon" || !!def.damage?.diceString;
+    if (!isWeapon || !def.damage?.diceString) continue;
+
+    const props = (def.properties ?? []).map((p) => p.name);
+    const ranged = def.attackType === 2;
+    const finesse = props.includes("Finesse");
+    const abilityMod = ranged ? dex : finesse ? Math.max(str, dex) : str;
+    const magic = (def.grantedModifiers ?? [])
+      .filter((m) => m.type === "bonus" && m.subType === "magic")
+      .reduce((a, m) => a + (m.value ?? 0), 0);
+    const prof = isWeaponProficient(char, def) ? pb : 0;
+    const toHit = abilityMod + prof + magic;
+    const dmgMod = abilityMod + magic;
+    const dmg = `${def.damage.diceString}${dmgMod ? (dmgMod > 0 ? `+${dmgMod}` : `${dmgMod}`) : ""}`;
+    const range = def.range ? (def.longRange && def.longRange !== def.range ? `${def.range}/${def.longRange} ft` : `${def.range} ft`) : "5 ft";
+    const qty = item.quantity > 1 ? ` (x${item.quantity})` : "";
+    lines.push(`  ${def.name}${qty}: ${sign(toHit)} to hit, ${dmg} ${(def.damageType ?? "").toLowerCase()}, ${range}${prof ? "" : " (not proficient)"}`);
+  }
+
+  // Attack and save cantrips (scaling is noted, not computed)
+  const SPELL_ABILITY: Record<string, number> = {
+    Wizard: 4, Artificer: 4, Sorcerer: 6, Warlock: 6, Bard: 6, Paladin: 6, Cleric: 5, Druid: 5, Ranger: 5,
+  };
+  const caster = char.classes.find((c) => SPELL_ABILITY[c.definition.name]);
+  if (caster) {
+    const mod = getAbilityModNumeric(char, SPELL_ABILITY[caster.definition.name]);
+    const atk = pb + mod;
+    const dc = 8 + pb + mod;
+    for (const sp of getAllSpells(char)) {
+      const d = sp.definition as typeof sp.definition & {
+        requiresAttackRoll?: boolean; requiresSavingThrow?: boolean; saveDcAbilityId?: number | null;
+      };
+      if (d.level !== 0 || !(sp.prepared || sp.alwaysPrepared)) continue;
+      if (d.requiresAttackRoll) lines.push(`  ${d.name} (cantrip): ${sign(atk)} to hit`);
+      else if (d.requiresSavingThrow) {
+        const ab = d.saveDcAbilityId ? ABILITY_NAMES[d.saveDcAbilityId - 1] : "";
+        lines.push(`  ${d.name} (cantrip): DC ${dc}${ab ? ` ${ab}` : ""} save`);
+      }
+    }
+  }
+
+  return lines.length ? `--- Attacks ---\n${lines.join("\n")}` : StringUtils.EMPTY;
+}
+
+function formatFullInventory(char: DdbCharacter): string {
+  const items = char.inventory ?? [];
+  const lines: string[] = [];
+  let weight = 0;
+  // Merge separate stacks of the same item (e.g. three "Torch x10" entries)
+  type Row = { name: string; qty: number; equipped: boolean; attuned: boolean };
+  const rows = new Map<string, Row>();
+  for (const item of items) {
+    const it = item as typeof item & { isAttuned?: boolean };
+    const def = item.definition as typeof item.definition & { bundleSize?: number | null };
+    const qty = item.quantity || 1;
+    // Weight is per bundle: 20 crossbow bolts weigh 1.5 lb, not 30 lb
+    weight += (def.weight ?? 0) * qty / Math.max(1, def.bundleSize ?? 1);
+    const key = `${def.name}|${item.equipped ? 1 : 0}|${it.isAttuned ? 1 : 0}`;
+    const row = rows.get(key) ?? { name: def.name, qty: 0, equipped: !!item.equipped, attuned: !!it.isAttuned };
+    row.qty += qty;
+    rows.set(key, row);
+  }
+  const sorted = [...rows.values()].sort((a, b) => Number(b.equipped) - Number(a.equipped) || a.name.localeCompare(b.name));
+  for (const r of sorted) {
+    const tags = [r.equipped ? "equipped" : "", r.attuned ? "attuned" : ""].filter(Boolean).join(", ");
+    lines.push(`  - ${r.name}${r.qty > 1 ? ` x${r.qty}` : ""}${tags ? ` [${tags}]` : ""}`);
+  }
+  const c = char.currencies;
+  const money = c ? `${c.pp ?? 0} pp, ${c.gp ?? 0} gp, ${c.ep ?? 0} ep, ${c.sp ?? 0} sp, ${c.cp ?? 0} cp` : "unknown";
+  const coinWeight = c ? ((c.pp ?? 0) + (c.gp ?? 0) + (c.ep ?? 0) + (c.sp ?? 0) + (c.cp ?? 0)) / 50 : 0;
+  const strScore = getAbilityScoreNumeric(char, 1);
+  const attuned = items.filter((i) => (i as typeof i & { isAttuned?: boolean }).isAttuned).length;
+  return [
+    `--- Inventory (${rows.size} entries) ---`,
+    ...lines,
+    `Currency: ${money}`,
+    `Carried weight: ${Math.round((weight + coinWeight) * 10) / 10} lb (capacity ${strScore * 15} lb)`,
+    `Attuned: ${attuned}/3`,
+  ].join("\n");
+}
+
+export function passivePerception(char: DdbCharacter): number {
+  const pb = calculateProficiencyBonus(computeLevel(char));
+  const wis = getAbilityModNumeric(char, 5);
+  const prof = hasModifierBySubType(char.modifiers, "perception", "proficiency");
+  const exp = hasModifierBySubType(char.modifiers, "perception", "expertise");
+  return 10 + wis + (exp ? pb * 2 : prof ? pb : 0) + sumModifierBonuses(char.modifiers, "passive-perception");
+}
+
 function formatCharacterSheet(char: DdbCharacter): string {
   const sections = [
     `=== ${char.name} ===`,
@@ -543,6 +676,7 @@ function formatCharacterSheet(char: DdbCharacter): string {
     `HP: ${formatHp(char)}`,
     `AC: ${calculateAc(char)}`,
     formatSpeed(char),
+    `Passive Perception: ${passivePerception(char)}`,
     StringUtils.EMPTY,
     `--- Ability Scores ---`,
     formatAbilityScores(char),
@@ -569,6 +703,9 @@ function formatCharacterSheet(char: DdbCharacter): string {
     if (spellSlots) sections.push(spellSlots.trim());
   }
 
+  const attacks = formatAttacks(char);
+  if (attacks) sections.push(StringUtils.EMPTY, attacks);
+
   // Add hit dice display
   const hitDice = formatHitDice(char);
   if (hitDice) sections.push(hitDice.trim());
@@ -588,8 +725,7 @@ function formatCharacterSheet(char: DdbCharacter): string {
     formatRacialTraitNames(char)
   );
 
-  const inventory = formatInventory(char);
-  if (inventory) sections.push(inventory);
+  sections.push(StringUtils.EMPTY, formatFullInventory(char));
 
   // Add traits display
   const traits = formatTraits(char);
@@ -933,7 +1069,13 @@ async function findCharacterByName(client: DdbClient, name: string): Promise<num
       `campaign:${campaign.id}:characters`,
       300_000
     );
-    allCharacters.push(...characters.map((char) => ({
+    const myUserId = await getUserId();
+    const owned = myUserId
+      ? characters.filter((char) => Number(char.userId) === myUserId)
+      : [];
+    // Fall back to the full roster if the User.ID cookie doesn't match anything.
+    const mine = owned.length > 0 ? owned : characters;
+    allCharacters.push(...mine.map((char) => ({
       id: char.id,
       name: char.name,
     })));
@@ -974,6 +1116,36 @@ async function findCharacterByName(client: DdbClient, name: string): Promise<num
   return null;
 }
 
+/**
+ * D&D Beyond doesn't include subclass "always prepared" spells (e.g. Alchemist
+ * Spells, Cleric domain spells) in the character payload; the site fetches them
+ * separately. Pull them in so they show up as prepared. Best effort only.
+ */
+async function withSubclassSpells(client: DdbClient, char: DdbCharacter): Promise<DdbCharacter> {
+  const extra: NonNullable<DdbCharacter["classSpells"]> = [];
+  for (const cls of char.classes ?? []) {
+    const subclassId = cls.subclassDefinition?.id;
+    if (!subclassId) continue;
+    try {
+      const spells = await client.get<DdbSpell[]>(
+        ENDPOINTS.gameData.alwaysPreparedSpells(subclassId, cls.level),
+        `subclass-spells:${subclassId}:${cls.level}`,
+        86_400_000
+      );
+      if (Array.isArray(spells) && spells.length > 0) {
+        extra.push({
+          characterClassId: cls.id,
+          spells: spells.map((sp) => ({ ...sp, alwaysPrepared: true })),
+        });
+      }
+    } catch {
+      // Ignore: the sheet still renders without subclass spells
+    }
+  }
+  if (extra.length === 0) return char;
+  return { ...char, classSpells: [...(char.classSpells ?? []), ...extra] };
+}
+
 export async function getCharacter(
   client: DdbClient,
   params: GetCharacterParams
@@ -983,11 +1155,12 @@ export async function getCharacter(
     return { content: [{ type: "text", text: idOrError }] };
   }
 
-  const character = await client.get<DdbCharacter>(
+  const fetched = await client.get<DdbCharacter>(
     ENDPOINTS.character.get(idOrError),
     `character:${idOrError}`,
     60_000
   );
+  const character = await withSubclassSpells(client, fetched);
 
   const detail = params.detail ?? "sheet";
   let text: string;
@@ -1042,7 +1215,7 @@ export async function listCharacters(
     };
   }
 
-  const characterDetails = await Promise.all(
+  const settled = await Promise.allSettled(
     allCharacters.map(async (char) => {
       const details = await client.get<DdbCharacter>(
         ENDPOINTS.character.get(char.id),
@@ -1059,10 +1232,14 @@ export async function listCharacters(
     })
   );
 
-  const lines = characterDetails.map(
-    (char) =>
-      `${char.name} - ${char.race} ${char.classes} (Level ${char.level}) - ${char.campaign}`
-  );
+  const lines = settled.map((result, i) => {
+    if (result.status === "fulfilled") {
+      const char = result.value;
+      return `${char.name} - ${char.race} ${char.classes} (Level ${char.level}) - ${char.campaign}`;
+    }
+    const char = allCharacters[i];
+    return `${char.name} (ID ${char.id}) - ${char.campaignName} - details unavailable`;
+  });
 
   return {
     content: [
@@ -2383,4 +2560,65 @@ export async function resolveChoices(
   ];
 
   return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
+
+// ============================================================================
+// PARTY SNAPSHOT
+// ============================================================================
+
+export async function getPartySnapshot(
+  client: DdbClient,
+  params: { campaignId?: number }
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+  const campaigns = await client.get<DdbCampaign[]>(ENDPOINTS.campaign.list(), "campaigns", 300_000);
+  let campaign = params.campaignId ? campaigns.find((c) => c.id === params.campaignId) : undefined;
+  if (!params.campaignId) {
+    if (campaigns.length !== 1) {
+      return text(`Pass campaignId:\n${campaigns.map((c) => `• ${c.name} (ID ${c.id})`).join("\n")}`);
+    }
+    campaign = campaigns[0];
+  }
+  if (!campaign) return text(`Campaign ${params.campaignId} not found.`);
+
+  const roster = await client.get<DdbCampaignCharacter2[]>(
+    ENDPOINTS.campaign.characters(campaign.id),
+    `campaign:${campaign.id}:characters`,
+    300_000
+  );
+
+  const results = await Promise.allSettled(
+    roster.map((r) => client.get<DdbCharacter>(ENDPOINTS.character.get(r.id), `character:${r.id}`, 60_000))
+  );
+
+  const SPELL_ABILITY: Record<string, number> = {
+    Wizard: 4, Artificer: 4, Sorcerer: 6, Warlock: 6, Bard: 6, Paladin: 6, Cleric: 5, Druid: 5, Ranger: 5,
+  };
+  const rows: string[] = [];
+  const hidden: string[] = [];
+  results.forEach((res, i) => {
+    if (res.status !== "fulfilled") {
+      hidden.push(`${roster[i].name} (${roster[i].userName})`);
+      return;
+    }
+    const c = res.value;
+    const pb = calculateProficiencyBonus(computeLevel(c));
+    const caster = c.classes.find((k) => SPELL_ABILITY[k.definition.name]);
+    const dc = caster ? 8 + pb + getAbilityModNumeric(c, SPELL_ABILITY[caster.definition.name]) : null;
+    const speed = formatSpeed(c).replace("Speed: ", "");
+    rows.push(
+      `| ${c.name} | ${roster[i].userName} | ${formatClasses(c)} | ${calculateAc(c)} | ${calculateCurrentHp(c)}/${calculateMaxHp(c)} | ${passivePerception(c)} | ${dc ?? "-"} | ${speed} |`
+    );
+  });
+
+  const lines = [
+    `# Party: ${campaign.name}`,
+    "",
+    "| Character | Player | Class | AC | HP | Passive Perception | Spell DC | Speed |",
+    "|---|---|---|---|---|---|---|---|",
+    ...rows,
+  ];
+  if (hidden.length) lines.push("", `*Private sheets (not readable): ${hidden.join(", ")}*`);
+  return text(lines.join("\n"));
 }
