@@ -17,8 +17,10 @@
  */
 import {
   Client,
+  ChannelType,
   Events,
   GatewayIntentBits,
+  Partials,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type Message,
@@ -93,8 +95,23 @@ async function answer(question: string): Promise<string> {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages],
+  // DM channels aren't cached until used; Partials.Channel lets the first DM through
+  partials: [Partials.Channel],
 });
+
+/** Only people in a server the bot is in can DM it (it holds your campaign's history). */
+async function sharesAServer(userId: string): Promise<boolean> {
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await guild.members.fetch(userId);
+      return true;
+    } catch {
+      // not a member of this guild
+    }
+  }
+  return false;
+}
 
 const askCommand = new SlashCommandBuilder()
   .setName("ask")
@@ -146,7 +163,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 client.on(Events.MessageCreate, async (message: Message) => {
-  if (message.author.bot || !client.user || !message.mentions.has(client.user)) return;
+  if (message.author.bot || !client.user) return;
+  const isDm = message.channel.type === ChannelType.DM;
+  if (!isDm && !message.mentions.has(client.user)) return;
+  if (isDm && !(await sharesAServer(message.author.id))) {
+    await message.reply("I only answer questions from members of my campaign's server.").catch(() => {});
+    return;
+  }
   const question = message.content.replace(/<@!?\d+>/g, "").trim();
   if (!question) {
     await message.reply("Ask me about the campaign, like: who is Ireena?").catch(() => {});
