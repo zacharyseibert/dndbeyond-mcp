@@ -39,7 +39,7 @@ interface Utterance {
   text: string;
 }
 
-interface Glossary {
+export interface Glossary {
   replacements: Record<string, string>;
   speakers: Record<string, string>;
 }
@@ -48,7 +48,7 @@ function parleyDbPath(): string {
   return process.env.PARLEY_DB || join(homedir(), "parley-data", "meetings.db");
 }
 
-function loadGlossary(): Glossary {
+export function loadGlossary(): Glossary {
   const path = join(process.env.DNDBEYOND_ARCHIVE_DIR || join(homedir(), ".dndbeyond-mcp"), "glossary.json");
   try {
     const g = JSON.parse(readFileSync(path, "utf8")) as Partial<Glossary>;
@@ -60,7 +60,7 @@ function loadGlossary(): Glossary {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function applyGlossary(s: string, g: Glossary): string {
+export function applyGlossary(s: string, g: Glossary): string {
   let out = s;
   // Longest first, so "Windshadow" is fixed before a shorter overlapping entry
   for (const [from, to] of Object.entries(g.replacements).sort((a, b) => b[0].length - a[0].length)) {
@@ -70,12 +70,12 @@ function applyGlossary(s: string, g: Glossary): string {
 }
 
 // Minimal shape of node:sqlite's DatabaseSync that we use
-interface SqliteDb {
+export interface SqliteDb {
   prepare(sql: string): { all(...args: unknown[]): unknown[]; get(...args: unknown[]): unknown };
   close(): void;
 }
 
-async function openParley(): Promise<SqliteDb | string> {
+export async function openParley(): Promise<SqliteDb | string> {
   const path = parleyDbPath();
   if (!existsSync(path)) {
     return `No Parley database at ${path}. Session transcripts are only available on the machine running Parley (set PARLEY_DB to override the path).`;
@@ -88,10 +88,10 @@ async function openParley(): Promise<SqliteDb | string> {
   }
 }
 
-function clock(ms: number): string {
+export function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
 }
-function day(ms: number): string {
+export function day(ms: number): string {
   return new Date(ms).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
 }
 
