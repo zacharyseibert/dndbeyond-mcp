@@ -2,6 +2,7 @@ import type { DdbClient } from "../api/client.js";
 import { ENDPOINTS } from "../api/endpoints.js";
 import { getUserId } from "../api/auth.js";
 import type { DdbCampaign } from "../types/api.js";
+import { readArchive, appendToArchive } from "../archive/gamelog-archive.js";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
@@ -10,7 +11,7 @@ interface GameLogDie {
   dieValue?: number;
 }
 
-interface GameLogRoll {
+export interface GameLogRoll {
   diceNotation?: {
     set?: Array<{ count?: number; dieType?: string; dice?: GameLogDie[] }>;
     constant?: number;
@@ -21,7 +22,7 @@ interface GameLogRoll {
   result?: { constant?: number; values?: number[]; total?: number; text?: string };
 }
 
-interface GameLogMessage {
+export interface GameLogMessage {
   id?: string;
   dateTime?: string | number;
   gameId?: string | number;
@@ -69,7 +70,7 @@ function notation(roll: GameLogRoll): string {
   return c ? `${dice}${c > 0 ? "+" : ""}${c}` : dice;
 }
 
-function formatRoll(roll: GameLogRoll): string {
+export function formatRoll(roll: GameLogRoll): string {
   const kind = roll.rollKind && roll.rollKind !== "" ? ` (${roll.rollKind})` : "";
   const type = roll.rollType ? `${roll.rollType}` : "roll";
   const values = roll.result?.values?.length ? ` [${roll.result.values.join(", ")}]` : "";
@@ -107,7 +108,7 @@ interface FetchResult {
   rawDump?: string;
 }
 
-async function fetchGameLog(
+export async function fetchGameLog(
   client: DdbClient,
   campaignIdParam: number | undefined,
   maxMessages: number,
@@ -162,6 +163,15 @@ async function fetchGameLog(
     lastKey = typeof resp.lastKey === "string" ? resp.lastKey : JSON.stringify(resp.lastKey);
   }
 
+  // Save what we just fetched, then merge in everything archived earlier
+  // (the live API only returns the most recent ~50 messages).
+  try {
+    appendToArchive(campaignId!, messages as never);
+    messages.push(...readArchive<GameLogMessage>(campaignId!));
+  } catch {
+    // archive is best effort
+  }
+
   // Dedupe by id, keep only completed rolls/events, newest first
   const seen = new Set<string>();
   const unique = messages.filter((m) => {
@@ -176,14 +186,14 @@ async function fetchGameLog(
   return { messages: unique, campaignId: campaignId!, campaignName };
 }
 
-function msgTime(m: GameLogMessage): number {
+export function msgTime(m: GameLogMessage): number {
   const t = m.dateTime;
   const n = typeof t === "string" && /^\d+$/.test(t) ? Number(t) : t;
   return new Date(n ?? 0).getTime() || 0;
 }
 
-const isRoll = (m: GameLogMessage) => m.eventType === "dice/roll/fulfilled";
-const who = (m: GameLogMessage) => m.data?.context?.name ?? `user ${m.userId ?? "?"}`;
+export const isRoll = (m: GameLogMessage) => m.eventType === "dice/roll/fulfilled";
+export const who = (m: GameLogMessage) => m.data?.context?.name ?? `user ${m.userId ?? "?"}`;
 
 /** The d20 that counted: highest with advantage, lowest with disadvantage. */
 function keptD20(roll: GameLogRoll): number | null {

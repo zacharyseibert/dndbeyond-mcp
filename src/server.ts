@@ -46,6 +46,7 @@ import {
 } from "./tools/character.js";
 import { listCampaigns, getCampaignCharacters } from "./tools/campaign.js";
 import { getGameLog, getSessionRecap, getRollStats } from "./tools/game-log.js";
+import { listRecordedSessions, getSessionTranscript, getSessionStory } from "./tools/sessions.js";
 import {
   searchSpells,
   getSpell,
@@ -673,6 +674,36 @@ export async function startServer(): Promise<void> {
       getCampaignCharacters(client, {
         campaignId: params.campaignId,
       })
+  );
+
+  server.tool(
+    "list_recorded_sessions",
+    "List play sessions recorded and transcribed by Parley (the Discord voice recorder), newest first",
+    {},
+    async () => listRecordedSessions()
+  );
+
+  server.tool(
+    "get_session_transcript",
+    "Get the per-speaker transcript of a recorded session (defaults to the most recent), with names corrected from the glossary",
+    {
+      sessionId: z.coerce.number().optional().describe("Parley session ID from list_recorded_sessions (default: latest)"),
+      offset: z.coerce.number().optional().describe("Line to start from, for long sessions (default 0)"),
+      limit: z.coerce.number().optional().describe("Max lines to return (default 600)"),
+    },
+    async (params) => getSessionTranscript(params)
+  );
+
+  server.tool(
+    "get_session_story",
+    "The full picture of a session: the table's conversation and every D&D Beyond dice roll, woven together in time order. Use this to write session recaps.",
+    {
+      sessionId: z.coerce.number().optional().describe("Parley session ID (default: latest)"),
+      campaignId: z.coerce.number().optional().describe("Campaign ID (defaults to your only active campaign)"),
+      offset: z.coerce.number().optional().describe("Line to start from, for long sessions (default 0)"),
+      limit: z.coerce.number().optional().describe("Max lines to return (default 600)"),
+    },
+    async (params) => getSessionStory(client, params)
   );
 
   server.tool(
