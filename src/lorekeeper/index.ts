@@ -34,6 +34,7 @@ import type { DdbCampaign } from "../types/api.js";
 import { retrieve } from "./retrieve.js";
 import { complete, llmConfigFromEnv } from "./llm.js";
 import { appendQuickNote } from "../archive/notes.js";
+import { formatChecks, runChecks, type Check } from "../health.js";
 
 const token = process.env.LOREKEEPER_TOKEN;
 if (!token) {
@@ -118,6 +119,10 @@ const askCommand = new SlashCommandBuilder()
   .setDescription("Ask about anything from past sessions")
   .addStringOption((o) => o.setName("question").setDescription("What do you want to know?").setRequired(true));
 
+const statusCommand = new SlashCommandBuilder()
+  .setName("status")
+  .setDescription("Check that the recorder, dice log and campaign tools are all working");
+
 const noteCommand = new SlashCommandBuilder()
   .setName("note")
   .setDescription("Save a note to the campaign history")
@@ -127,18 +132,77 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Q&A bot online as ${c.user.tag} (model: ${llm.provider}:${llm.model})`);
   for (const guild of c.guilds.cache.values()) {
     try {
-      await guild.commands.set([askCommand.toJSON(), noteCommand.toJSON()]);
-      console.log(`registered /ask and /note in ${guild.name}`);
+      await guild.commands.set([askCommand.toJSON(), noteCommand.toJSON(), statusCommand.toJSON()]);
+      console.log(`registered /ask, /note and /status in ${guild.name}`);
     } catch (err) {
       console.error(`couldn't register /ask in ${guild.name}:`, err instanceof Error ? err.message : err);
     }
   }
   void loadParty();
+  setTimeout(watchdog, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Watchdog: checks every 15 minutes and DMs the owner when something breaks
+// (after two failures in a row, to skip blips) and again when it recovers.
+// ---------------------------------------------------------------------------
+const OWNER_ID = process.env.LOREKEEPER_OWNER_ID;
+const failStreak = new Map<string, number>();
+const alerted = new Set<string>();
+
+async function notifyOwner(text: string): Promise<void> {
+  if (!OWNER_ID) return;
+  try {
+    const user = await client.users.fetch(OWNER_ID);
+    await user.send(text.slice(0, 2000));
+  } catch (err) {
+    console.error("couldn't DM owner:", err instanceof Error ? err.message : err);
+  }
+}
+
+async function watchdog(): Promise<void> {
+  try {
+    const checks: Check[] = await runChecks(ddb);
+    const broke: Check[] = [];
+    const fixed: Check[] = [];
+    for (const c of checks) {
+      if (c.ok) {
+        failStreak.delete(c.id);
+        if (alerted.delete(c.id)) fixed.push(c);
+      } else {
+        const n = (failStreak.get(c.id) ?? 0) + 1;
+        failStreak.set(c.id, n);
+        if (n >= 2 && !alerted.has(c.id)) {
+          alerted.add(c.id);
+          broke.push(c);
+        }
+      }
+    }
+    if (broke.length) {
+      await notifyOwner(
+        `⚠️ **Campaign tools need attention**\n${broke.map((c) => `❌ **${c.name}**: ${c.detail}${c.fix ? `\n  ↳ Fix: \`${c.fix}\`` : ""}`).join("\n")}`
+      );
+    }
+    if (fixed.length) await notifyOwner(`✅ Back to normal: ${fixed.map((c) => c.name).join(", ")}`);
+  } catch (err) {
+    console.error("watchdog failed:", err);
+  }
+  setTimeout(watchdog, 15 * 60_000);
+}
 
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const i = interaction as ChatInputCommandInteraction;
+  if (i.commandName === "status") {
+    await i.deferReply();
+    try {
+      await i.editReply(formatChecks(await runChecks(ddb)).slice(0, 2000));
+    } catch (err) {
+      console.error("status failed:", err);
+      await i.editReply("Couldn't run the checks.").catch(() => {});
+    }
+    return;
+  }
   if (i.commandName === "note") {
     const note = i.options.getString("text", true);
     const author = (i.member && "displayName" in i.member ? i.member.displayName : null) ?? i.user.username;

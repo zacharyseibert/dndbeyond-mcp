@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { notesDir } from "./archive/notes.js";
+import { writeHeartbeat } from "./health.js";
 
 const BASE = (process.env.LEGENDKEEPER_BASE_URL || "https://www.legendkeeper.com").replace(/\/$/, "") + "/api/v3";
 const KEY = process.env.LEGENDKEEPER_API_KEY;
@@ -122,6 +123,7 @@ async function syncOnce(): Promise<void> {
     }
   }
   log(`synced ${pages} pages from ${resources.length} resources${removed ? `, removed ${removed} stale` : ""}`);
+  writeHeartbeat("lk-sync", `${pages} pages`);
 }
 
 async function loop(): Promise<void> {

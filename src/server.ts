@@ -46,6 +46,7 @@ import {
 } from "./tools/character.js";
 import { listCampaigns, getCampaignCharacters } from "./tools/campaign.js";
 import { getGameLog, getSessionRecap, getRollStats } from "./tools/game-log.js";
+import { postToDiscord } from "./tools/discord.js";
 import { listRecordedSessions, getSessionTranscript, getSessionStory, addSessionNotes, listSessionNotes } from "./tools/sessions.js";
 import {
   searchSpells,
@@ -704,6 +705,15 @@ export async function startServer(): Promise<void> {
       limit: z.coerce.number().optional().describe("Max lines to return (default 600)"),
     },
     async (params) => getSessionStory(client, params)
+  );
+
+  server.tool(
+    "post_to_discord",
+    "Post a message to the campaign's Discord recap channel (via webhook). Long messages are split at paragraph breaks. Markdown works; @mentions are disabled.",
+    {
+      message: z.string().describe("The message, in Discord Markdown"),
+    },
+    async (params) => postToDiscord(params)
   );
 
   server.tool(

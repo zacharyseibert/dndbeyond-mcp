@@ -14,6 +14,7 @@ import { ENDPOINTS } from "./api/endpoints.js";
 import { getUserId } from "./api/auth.js";
 import { appendToArchive, archivePath } from "./archive/gamelog-archive.js";
 import type { DdbCampaign } from "./types/api.js";
+import { writeHeartbeat } from "./health.js";
 
 const INTERVAL_MS = Number(process.env.ARCHIVE_INTERVAL_MS || 60_000);
 
@@ -53,6 +54,7 @@ async function tick(): Promise<void> {
     const added = appendToArchive(id, (resp?.data ?? []) as never);
     if (added > 0) log(`campaign ${id}: +${added} new (${archivePath(id)})`);
   }
+  writeHeartbeat("archiver", `${campaignIds.length} campaign(s)`);
 }
 
 async function loop(): Promise<void> {
