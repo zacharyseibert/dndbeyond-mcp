@@ -46,7 +46,7 @@ import {
 } from "./tools/character.js";
 import { listCampaigns, getCampaignCharacters } from "./tools/campaign.js";
 import { getGameLog, getSessionRecap, getRollStats } from "./tools/game-log.js";
-import { listRecordedSessions, getSessionTranscript, getSessionStory } from "./tools/sessions.js";
+import { listRecordedSessions, getSessionTranscript, getSessionStory, addSessionNotes, listSessionNotes } from "./tools/sessions.js";
 import {
   searchSpells,
   getSpell,
@@ -704,6 +704,26 @@ export async function startServer(): Promise<void> {
       limit: z.coerce.number().optional().describe("Max lines to return (default 600)"),
     },
     async (params) => getSessionStory(client, params)
+  );
+
+  server.tool(
+    "add_session_notes",
+    "Save written notes or a recap for a play session, so the Discord Q&A bot can answer from them. Use for sessions that weren't recorded, or to add a cleaned-up recap.",
+    {
+      date: z.string().describe("Session date, YYYY-MM-DD"),
+      title: z.string().describe("Short title, e.g. 'Session 12: The Burgomaster's Mansion'"),
+      notes: z.string().describe("The notes, in Markdown"),
+    },
+    async (params) => addSessionNotes(params)
+  );
+
+  server.tool(
+    "list_session_notes",
+    "List saved session notes, or read the notes for one date",
+    {
+      date: z.string().optional().describe("YYYY-MM-DD to read that date's notes; omit to list all"),
+    },
+    async (params) => listSessionNotes(params)
   );
 
   server.tool(

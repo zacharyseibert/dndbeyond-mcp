@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DdbClient } from "../api/client.js";
+import { listNotes, saveNotes } from "../archive/notes.js";
 import { fetchGameLog, formatRoll, isRoll, msgTime, who, type GameLogMessage } from "./game-log.js";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -229,4 +230,28 @@ export async function getSessionStory(
     (log.error ? ` Dice log unavailable: ${log.error}` : "") +
     `*\n`;
   return text(header + "\n" + body + note);
+}
+
+// ============================================================================
+// SESSION NOTES
+// ============================================================================
+
+export async function addSessionNotes(params: { date: string; title: string; notes: string }): Promise<ToolResult> {
+  try {
+    const file = saveNotes(params.date, params.title, params.notes);
+    return text(`Saved session notes as ${file}. The Discord Q&A bot will search them from now on.`);
+  } catch (err) {
+    return text(`Couldn't save notes: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export async function listSessionNotes(params: { date?: string }): Promise<ToolResult> {
+  const notes = listNotes();
+  if (notes.length === 0) return text("No session notes saved yet.");
+  if (params.date) {
+    const hits = notes.filter((n) => n.date === params.date);
+    if (hits.length === 0) return text(`No notes for ${params.date}.`);
+    return text(hits.map((n) => `## ${n.file}\n\n${n.text}`).join("\n\n---\n\n"));
+  }
+  return text(["# Session notes", "", ...notes.map((n) => `- ${n.date || "undated"}: ${n.title} (${n.file})`)].join("\n"));
 }

@@ -31,6 +31,7 @@ import { getPartySnapshot } from "../tools/character.js";
 import type { DdbCampaign } from "../types/api.js";
 import { retrieve } from "./retrieve.js";
 import { complete, llmConfigFromEnv } from "./llm.js";
+import { appendQuickNote } from "../archive/notes.js";
 
 const token = process.env.LOREKEEPER_TOKEN;
 if (!token) {
@@ -75,7 +76,8 @@ Players ask you what happened in past sessions. Answer ONLY from the session exc
 - Be brief: a few sentences or a short list. Plain words.
 - Cite where it came from, like (Session 3, Nov 11 ~9:40 PM).
 - If the excerpts don't answer the question, say you couldn't find it in the recorded sessions. Never invent events, names or details.
-- Lines starting [dice] are real D&D Beyond rolls with their totals.`;
+- Lines starting [dice] are real D&D Beyond rolls with their totals.
+- Sections marked Notes are written summaries by the players. Trust them over the transcript when they disagree.`;
 
 async function answer(question: string): Promise<string> {
   const c = await loadCampaign();
@@ -99,12 +101,17 @@ const askCommand = new SlashCommandBuilder()
   .setDescription("Ask about anything from past sessions")
   .addStringOption((o) => o.setName("question").setDescription("What do you want to know?").setRequired(true));
 
+const noteCommand = new SlashCommandBuilder()
+  .setName("note")
+  .setDescription("Save a note to the campaign history")
+  .addStringOption((o) => o.setName("text").setDescription("What should be remembered?").setRequired(true).setMaxLength(1500));
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`Q&A bot online as ${c.user.tag} (model: ${llm.provider}:${llm.model})`);
   for (const guild of c.guilds.cache.values()) {
     try {
-      await guild.commands.set([askCommand.toJSON()]);
-      console.log(`registered /ask in ${guild.name}`);
+      await guild.commands.set([askCommand.toJSON(), noteCommand.toJSON()]);
+      console.log(`registered /ask and /note in ${guild.name}`);
     } catch (err) {
       console.error(`couldn't register /ask in ${guild.name}:`, err instanceof Error ? err.message : err);
     }
@@ -113,8 +120,21 @@ client.once(Events.ClientReady, async (c) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "ask") return;
+  if (!interaction.isChatInputCommand()) return;
   const i = interaction as ChatInputCommandInteraction;
+  if (i.commandName === "note") {
+    const note = i.options.getString("text", true);
+    const author = (i.member && "displayName" in i.member ? i.member.displayName : null) ?? i.user.username;
+    try {
+      appendQuickNote(author, note);
+      await i.reply(`Noted: ${note}`.slice(0, 2000));
+    } catch (err) {
+      console.error("note failed:", err);
+      await i.reply({ content: "Couldn't save that note.", ephemeral: true }).catch(() => {});
+    }
+    return;
+  }
+  if (i.commandName !== "ask") return;
   const question = i.options.getString("question", true);
   await i.deferReply();
   try {

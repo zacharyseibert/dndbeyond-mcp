@@ -7,6 +7,7 @@
  */
 import { applyGlossary, clock, day, loadGlossary, openParley, type SqliteDb } from "../tools/sessions.js";
 import { readArchive } from "../archive/gamelog-archive.js";
+import { listNotes, searchNotes } from "../archive/notes.js";
 
 interface Hit { id: number; meeting_id: number; start_ms: number }
 interface Utt { meeting_id: number; display_name: string; start_ms: number; text: string }
@@ -65,7 +66,7 @@ export interface Retrieved {
   found: boolean;
 }
 
-export async function retrieve(question: string, campaignId?: number): Promise<Retrieved> {
+async function retrieveTranscripts(question: string, campaignId: number | undefined, budget: number): Promise<Retrieved> {
   const db = await openParley();
   if (typeof db === "string") return { excerpts: "", sources: [], found: false };
   const g = loadGlossary();
@@ -125,8 +126,8 @@ export async function retrieve(question: string, campaignId?: number): Promise<R
       ].sort((a, b) => a.ms - b.ms);
       const label = `Session ${w.meeting}, ${day(utts[0].start_ms)} around ${clock(utts[0].start_ms)}`;
       let block = `### ${label}\n${lines.map((l) => `[${clock(l.ms)}] ${l.s}`).join("\n")}`;
-      if (used + block.length > MAX_CHARS) {
-        const room = MAX_CHARS - used;
+      if (used + block.length > budget) {
+        const room = budget - used;
         if (room < 800) break;
         block = block.slice(0, room) + "\n[...]";
       }
@@ -138,4 +139,39 @@ export async function retrieve(question: string, campaignId?: number): Promise<R
   } finally {
     (db as SqliteDb).close();
   }
+}
+
+const NOTES_BUDGET = 8_000;
+
+/** Notes first (curated, dense), then transcript excerpts with what budget is left. */
+export async function retrieve(question: string, campaignId?: number): Promise<Retrieved> {
+  const terms = keywords(question, {});
+  const blocks: string[] = [];
+  const sources: string[] = [];
+  let used = 0;
+
+  if (wantsLatestSession(question)) {
+    const latest = listNotes().find((n) => n.date);
+    if (latest) {
+      const body = latest.text.slice(0, NOTES_BUDGET);
+      blocks.push(`### Notes: ${latest.title} (${latest.date})\n${body}`);
+      sources.push(`Notes ${latest.date}`);
+      used += body.length;
+    }
+  }
+  for (const hit of searchNotes(terms)) {
+    if (used > NOTES_BUDGET) break;
+    if (blocks.some((b) => b.includes(hit.chunk))) continue;
+    blocks.push(`### Notes: ${hit.note.title}${hit.note.date ? ` (${hit.note.date})` : ""}\n${hit.chunk}`);
+    const label = `Notes ${hit.note.date || hit.note.title}`;
+    if (!sources.includes(label)) sources.push(label);
+    used += hit.chunk.length;
+  }
+
+  const t = await retrieveTranscripts(question, campaignId, MAX_CHARS - Math.min(used, NOTES_BUDGET));
+  if (t.found) {
+    blocks.push(t.excerpts);
+    sources.push(...t.sources);
+  }
+  return { excerpts: blocks.join("\n\n"), sources, found: blocks.length > 0 };
 }
