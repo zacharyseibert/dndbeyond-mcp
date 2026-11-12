@@ -12,9 +12,10 @@
  * Env: LEGENDKEEPER_API_KEY (required), LEGENDKEEPER_PROJECT_ID (optional),
  *      LK_SYNC_INTERVAL_MS (default 1 hour), LK_SYNC_ONCE=1 to run once and exit.
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { notesDir } from "./archive/notes.js";
+import { listNotes, notesDir } from "./archive/notes.js";
 import { writeHeartbeat } from "./health.js";
 
 const BASE = (process.env.LEGENDKEEPER_BASE_URL || "https://www.legendkeeper.com").replace(/\/$/, "") + "/api/v3";
@@ -124,6 +125,43 @@ async function syncOnce(): Promise<void> {
   }
   log(`synced ${pages} pages from ${resources.length} resources${removed ? `, removed ${removed} stale` : ""}`);
   writeHeartbeat("lk-sync", `${pages} pages`);
+  writeVocabulary(resources.filter((r) => !r.isTemplate && !r.template && !r.isHidden).map((r) => String(r.name)));
+}
+
+/**
+ * Names for Parley's speech engine to listen for (passed to Whisper as hotwords).
+ * Whisper only takes ~100 names, so order matters: the party and core names,
+ * then wiki names mentioned in the last two session recaps, then everything else.
+ */
+const CORE = (process.env.VOCAB_CORE || "Strahd,Barovia,Wind Shadow,Atug,Broman,Lennie,Bumster,Clark")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+function looksLikeAName(n: string): boolean {
+  if (n.length < 3 || n.length > 40) return false;
+  if (/[0-9:#/]/.test(n)) return false; // chapter titles, dates, paths
+  return /^[A-Z]/.test(n) && /[A-Z][a-z]/.test(n);
+}
+
+function writeVocabulary(wikiNames: string[]): void {
+  try {
+    const recent = listNotes().filter((n) => n.date).slice(0, 2).map((n) => n.text.toLowerCase()).join("\n");
+    const names = [...new Set(wikiNames.map((n) => n.trim()).filter(looksLikeAName))];
+    const mentioned = names.filter((n) => recent.includes(n.toLowerCase()));
+    const rest = names.filter((n) => !mentioned.includes(n)).sort((a, b) => a.length - b.length);
+    let glossaryNames: string[] = [];
+    try {
+      const g = JSON.parse(readFileSync(join(notesDir(), "..", "glossary.json"), "utf8"));
+      glossaryNames = Object.values(g.replacements ?? {}).map(String);
+    } catch {
+      // no glossary yet
+    }
+    const ordered = [...new Set([...CORE, ...glossaryNames, ...mentioned, ...rest])];
+    const out = process.env.PARLEY_VOCAB_FILE || join(homedir(), "parley-data", "vocabulary.txt");
+    writeFileSync(out, ordered.join("\n") + "\n");
+    log(`vocabulary: ${ordered.length} names (${mentioned.length} from recent sessions) -> ${out}`);
+  } catch (err) {
+    log(`vocabulary not written: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 async function loop(): Promise<void> {
