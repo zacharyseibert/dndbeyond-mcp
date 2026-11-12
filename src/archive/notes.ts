@@ -22,18 +22,23 @@ export interface NoteFile {
   text: string;
 }
 
-export function listNotes(): NoteFile[] {
-  const dir = notesDir();
+function readNoteDir(dir: string, prefix = ""): NoteFile[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".md") || f.endsWith(".txt"))
-    .map((file) => {
-      const text = readFileSync(join(dir, file), "utf8");
-      const date = file.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+    .map((f) => {
+      const text = readFileSync(join(dir, f), "utf8");
+      const date = f.match(/^(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
       const heading = text.match(/^#\s+(.+)$/m)?.[1]?.trim();
-      return { file, date, title: heading || file.replace(/\.(md|txt)$/, ""), text };
-    })
-    .sort((a, b) => b.date.localeCompare(a.date));
+      return { file: prefix + f, date, title: heading || f.replace(/\.(md|txt)$/, ""), text };
+    });
+}
+
+/** Session notes (dated, newest first), then wiki pages synced from LegendKeeper. */
+export function listNotes(): NoteFile[] {
+  const sessions = readNoteDir(notesDir()).sort((a, b) => b.date.localeCompare(a.date));
+  const wiki = readNoteDir(join(notesDir(), "legendkeeper"), "legendkeeper/");
+  return [...sessions, ...wiki];
 }
 
 /** Save a full notes document for a session date. Returns the file name. */
@@ -58,16 +63,36 @@ export function appendQuickNote(author: string, note: string, now = new Date()):
   return file;
 }
 
-/** Split notes into paragraphs/bullets and score them against search terms. */
+/** Split notes into paragraphs/bullets (long ones cut further) and score them against search terms. */
 export function searchNotes(terms: string[], limit = 8): Array<{ note: NoteFile; chunk: string; score: number }> {
   if (terms.length === 0) return [];
   const out: Array<{ note: NoteFile; chunk: string; score: number }> = [];
   for (const note of listNotes()) {
-    const chunks = note.text.split(/\n\s*\n|\n(?=\s*[-*]\s)/).map((c) => c.trim()).filter((c) => c.length > 0 && !/^#\s/.test(c));
+    const titleLow = note.title.toLowerCase();
+    const titleHits = terms.filter((t) => titleLow.includes(t)).length;
+    const raw = note.text.split(/\n\s*\n|\n(?=\s*[-*]\s)/).map((c) => c.trim()).filter((c) => c.length > 0 && !/^#\s/.test(c));
+    // Wiki text can come as long runs of single lines: cut anything over ~1200 chars
+    const chunks = raw.flatMap((c) => {
+      if (c.length <= 1200) return [c];
+      const lines = c.split("\n");
+      const parts: string[] = [];
+      let cur = "";
+      for (const l of lines) {
+        if (cur.length + l.length > 1200 && cur) {
+          parts.push(cur);
+          cur = "";
+        }
+        cur += (cur ? "\n" : "") + l;
+      }
+      if (cur) parts.push(cur);
+      return parts;
+    });
     for (const chunk of chunks) {
       const low = chunk.toLowerCase();
-      const score = terms.reduce((n, t) => n + (low.includes(t) ? 1 : 0), 0);
-      if (score > 0) out.push({ note, chunk, score });
+      const hits = terms.reduce((n, t) => n + (low.includes(t) ? 1 : 0), 0);
+      // A page named after the thing asked about ("Who is Ireena?" -> the Ireena page) ranks high
+      const score = hits + titleHits * 2;
+      if (hits > 0 || titleHits > 0) out.push({ note, chunk, score });
     }
   }
   return out.sort((a, b) => b.score - a.score || b.note.date.localeCompare(a.note.date)).slice(0, limit);

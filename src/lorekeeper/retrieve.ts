@@ -162,8 +162,9 @@ export async function retrieve(question: string, campaignId?: number): Promise<R
   for (const hit of searchNotes(terms)) {
     if (used > NOTES_BUDGET) break;
     if (blocks.some((b) => b.includes(hit.chunk))) continue;
-    blocks.push(`### Notes: ${hit.note.title}${hit.note.date ? ` (${hit.note.date})` : ""}\n${hit.chunk}`);
-    const label = `Notes ${hit.note.date || hit.note.title}`;
+    const wiki = hit.note.file.startsWith("legendkeeper/");
+    blocks.push(`### ${wiki ? "Wiki" : "Notes"}: ${hit.note.title}${hit.note.date ? ` (${hit.note.date})` : ""}\n${hit.chunk}`);
+    const label = wiki ? `Wiki: ${hit.note.title}` : `Notes ${hit.note.date || hit.note.title}`;
     if (!sources.includes(label)) sources.push(label);
     used += hit.chunk.length;
   }

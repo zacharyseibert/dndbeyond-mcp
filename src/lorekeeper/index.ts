@@ -77,7 +77,7 @@ Players ask you what happened in past sessions. Answer ONLY from the session exc
 - Cite where it came from, like (Session 3, Nov 11 ~9:40 PM).
 - If the excerpts don't answer the question, say you couldn't find it in the recorded sessions. Never invent events, names or details.
 - Lines starting [dice] are real D&D Beyond rolls with their totals.
-- Sections marked Notes are written summaries by the players. Trust them over the transcript when they disagree.`;
+- Sections marked Notes are written session summaries, and Wiki sections come from the group's LegendKeeper campaign wiki. Trust both over the transcript when they disagree.`;
 
 async function answer(question: string): Promise<string> {
   const c = await loadCampaign();
