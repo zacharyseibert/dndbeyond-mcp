@@ -119,6 +119,34 @@ const askCommand = new SlashCommandBuilder()
   .setDescription("Ask about anything from past sessions")
   .addStringOption((o) => o.setName("question").setDescription("What do you want to know?").setRequired(true));
 
+const HELP = (name: string) => `**${name}: your campaign's memory**
+I answer from the LegendKeeper wiki, past session recaps and notes, and recordings of past sessions.
+
+**Commands**
+\`/ask question: ...\`: ask about anything from past sessions or the wiki
+\`/note text: ...\`: save something worth remembering (names, promises, clues)
+\`/status\`: check that recording and the campaign tools are working
+\`/help\`: this message
+You can also **DM me** a question, no command needed.
+
+**Good questions** name a person, place or thing:
+• Who is Dmitri Krezkov?
+• What did we promise the Martikovs?
+• What was in Baba Lysaga's chest?
+• What do we know about the Abbot?
+
+**What I can't do**
+• Tonight's session: I only learn it after the recording is transcribed overnight. Use \`/note\` for anything you want me to know now.
+• Tactics or "what should we do?": I look things up, I don't give advice.
+• Rules, spells and monster stats: check D&D Beyond.
+
+**Every Wednesday** I post a *Previously, in Barovia...* catch-up before the session, and **every Thursday morning** the recap of the night before.
+-# Each answer lists where it came from. If something's wrong, tell the group and add a /note.`;
+
+const helpCommand = new SlashCommandBuilder()
+  .setName("help")
+  .setDescription("How to use the campaign bot");
+
 const statusCommand = new SlashCommandBuilder()
   .setName("status")
   .setDescription("Check that the recorder, dice log and campaign tools are all working");
@@ -132,8 +160,8 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Q&A bot online as ${c.user.tag} (model: ${llm.provider}:${llm.model})`);
   for (const guild of c.guilds.cache.values()) {
     try {
-      await guild.commands.set([askCommand.toJSON(), noteCommand.toJSON(), statusCommand.toJSON()]);
-      console.log(`registered /ask, /note and /status in ${guild.name}`);
+      await guild.commands.set([askCommand.toJSON(), noteCommand.toJSON(), statusCommand.toJSON(), helpCommand.toJSON()]);
+      console.log(`registered /ask, /note, /status and /help in ${guild.name}`);
     } catch (err) {
       console.error(`couldn't register /ask in ${guild.name}:`, err instanceof Error ? err.message : err);
     }
@@ -193,6 +221,10 @@ async function watchdog(): Promise<void> {
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
   const i = interaction as ChatInputCommandInteraction;
+  if (i.commandName === "help") {
+    await i.reply({ content: HELP(client.user?.username ?? "Tinklerbot"), ephemeral: true }).catch(() => {});
+    return;
+  }
   if (i.commandName === "status") {
     await i.deferReply();
     try {
@@ -235,6 +267,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
     return;
   }
   const question = message.content.replace(/<@!?\d+>/g, "").trim();
+  if (/^(help|\/help|\?|commands)$/i.test(question)) {
+    await message.reply(HELP(client.user.username)).catch(() => {});
+    return;
+  }
   if (!question) {
     await message.reply("Ask me about the campaign, like: who is Ireena?").catch(() => {});
     return;
